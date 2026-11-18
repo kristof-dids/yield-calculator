@@ -5,7 +5,7 @@
 // The readable app never enters this repository: it is encrypted (AES-256-GCM, key from the
 // password via PBKDF2-SHA256) and embedded in the login page, which is written to index.html —
 // the only file GitHub Pages serves to visitors.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes, pbkdf2Sync, createCipheriv, createHash } from "node:crypto";
 
 const source = process.argv[2];
@@ -18,7 +18,12 @@ const ITERATIONS = 600000;
 const html = readFileSync(source, "utf8");
 if (html.includes("�")) { console.error("Source contains a replacement character (U+FFFD) — fix first."); process.exit(1); }
 
-const salt = randomBytes(16), iv = randomBytes(12);
+// The salt is generated once and kept in salt.txt (it is public anyway: it also sits inside index.html).
+// A fixed salt keeps the derived key the same between builds, so "remember me" survives updates of the app.
+// Changing the password changes the key, so remembered logins then ask for the new password.
+const saltFile = new URL("./salt.txt", import.meta.url);
+if (!existsSync(saltFile)) writeFileSync(saltFile, randomBytes(16).toString("base64"));
+const salt = Buffer.from(readFileSync(saltFile, "utf8").trim(), "base64"), iv = randomBytes(12);
 const key = pbkdf2Sync(password, salt, ITERATIONS, 32, "sha256");
 const cipher = createCipheriv("aes-256-gcm", key, iv);
 const ct = Buffer.concat([cipher.update(html, "utf8"), cipher.final(), cipher.getAuthTag()]); // WebCrypto wants the tag appended

@@ -40,6 +40,8 @@ button:hover{background:var(--accent-strong); border-color:var(--accent-strong);
 button:disabled{opacity:.6; cursor:wait;}
 .error{min-height:1.3em; margin-top:10px; font-size:.84rem; color:var(--bad);}
 .fine{margin-top:18px; font-size:.74rem; color:var(--ink-muted); line-height:1.5;}
+.rem{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:.84rem;font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-muted);cursor:pointer}
+.rem input{width:auto;margin:0}
 </style>
 </head>
 <body>
@@ -50,6 +52,7 @@ button:disabled{opacity:.6; cursor:wait;}
   <form id="f" autocomplete="off">
     <label for="pw">Password</label>
     <input id="pw" type="password" autocomplete="current-password" required autofocus>
+    <label class="rem"><input id="remember" type="checkbox"> <span id="rem-label">Remember me on this device</span></label>
     <button id="go" type="submit">Open</button>
     <div class="error" id="err" role="alert"></div>
   </form>
@@ -67,13 +70,16 @@ if (location.protocol === "http:" && !["localhost", "127.0.0.1"].includes(locati
 const NL = (() => { try { const p = new URLSearchParams(location.search).get("lang"); if (p === "nl" || p === "en") return p === "nl"; } catch(e){}
   try { const s = localStorage.getItem("finaspan-yield-lang"); if (s === "nl" || s === "en") return s === "nl"; } catch(e){}
   return /^nl/i.test(navigator.language || ""); })();
-const TXT = NL ? { title: "Rendementscalculator", intro: "Deze pagina is afgeschermd. Geef het wachtwoord in dat je ontving.", pw: "Wachtwoord", open: "Openen", busy: "Bezig…", bad: "Dat wachtwoord klopt niet.", fine: "Je gegevens blijven in je eigen browser en worden nooit naar een server gestuurd." }
-  : { title: "Yield Calculator", intro: "This page is protected. Enter the password you received.", pw: "Password", open: "Open", busy: "Opening…", bad: "That password is not correct.", fine: "Your data stays in your own browser and is never sent to a server." };
+const TXT = NL ? { title: "Rendementscalculator", intro: "Deze pagina is afgeschermd. Geef het wachtwoord in dat je ontving.", pw: "Wachtwoord", open: "Openen", busy: "Bezig…", bad: "Dat wachtwoord klopt niet.", fine: "Je gegevens blijven in je eigen browser en worden nooit naar een server gestuurd.", rem: "Onthoud mij op dit toestel" }
+  : { title: "Yield Calculator", intro: "This page is protected. Enter the password you received.", pw: "Password", open: "Open", busy: "Opening…", bad: "That password is not correct.", fine: "Your data stays in your own browser and is never sent to a server.", rem: "Remember me on this device" };
 document.documentElement.lang = NL ? "nl" : "en"; document.title = TXT.title;
 document.querySelector("h1").textContent = TXT.title; document.querySelector("main p").textContent = TXT.intro;
-document.querySelector('label[for="pw"]').textContent = TXT.pw; document.getElementById("go").textContent = TXT.open; document.querySelector(".fine").textContent = TXT.fine;
+document.querySelector('label[for="pw"]').textContent = TXT.pw; document.getElementById("go").textContent = TXT.open; document.querySelector(".fine").textContent = TXT.fine; document.getElementById("rem-label").textContent = TXT.rem;
 const PAYLOAD = /*__PAYLOAD__*/null;
 const SESSION_KEY = "yield-calculator:unlock:" + (PAYLOAD && PAYLOAD.id);
+// "Remember me": the derived key (never the password) is kept in this browser for 30 days. It stays valid across app
+// updates because the build keeps the same salt; a changed password makes it invalid and the login asks again.
+const REMEMBER_KEY = "yield-calculator:remember", REMEMBER_DAYS = 30;
 const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const b64e = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
 
@@ -89,25 +95,32 @@ function show(html){
   else window.addEventListener("load", swap, { once: true });
 }
 
-async function unlock(password){
+async function unlock(password, remember){
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
   const key = await crypto.subtle.deriveKey(
     { name: "PBKDF2", salt: b64d(PAYLOAD.salt), iterations: PAYLOAD.iter, hash: "SHA-256" },
     base, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
   const html = await decryptWith(key); // throws on a wrong password
-  try { sessionStorage.setItem(SESSION_KEY, b64e(await crypto.subtle.exportKey("raw", key))); } catch(e){}
+  const raw = b64e(await crypto.subtle.exportKey("raw", key));
+  try { sessionStorage.setItem(SESSION_KEY, raw); } catch(e){}
+  try { if (remember) localStorage.setItem(REMEMBER_KEY, JSON.stringify({ k: raw, t: Date.now() })); else localStorage.removeItem(REMEMBER_KEY); } catch(e){}
   show(html);
 }
 
 (async () => {
-  let saved = null;
-  try { saved = sessionStorage.getItem(SESSION_KEY); } catch(e){}
-  if (saved){
+  const candidates = [];
+  try { const s = sessionStorage.getItem(SESSION_KEY); if (s) candidates.push(["s", s]); } catch(e){}
+  try {
+    const r = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null");
+    if (r && r.k && Date.now() - r.t < REMEMBER_DAYS * 864e5) candidates.push(["r", r.k]);
+    else if (r) localStorage.removeItem(REMEMBER_KEY);
+  } catch(e){}
+  for (const [kind, saved] of candidates){
     try {
       const key = await crypto.subtle.importKey("raw", b64d(saved), { name: "AES-GCM" }, false, ["decrypt"]);
       show(await decryptWith(key));
       return;
-    } catch(e){ try { sessionStorage.removeItem(SESSION_KEY); } catch(_){} }
+    } catch(e){ try { if (kind === "s") sessionStorage.removeItem(SESSION_KEY); else localStorage.removeItem(REMEMBER_KEY); } catch(_){} }
   }
 })();
 
@@ -115,7 +128,7 @@ document.getElementById("f").addEventListener("submit", async e => {
   e.preventDefault();
   const btn = document.getElementById("go"), err = document.getElementById("err");
   btn.disabled = true; btn.textContent = TXT.busy; err.textContent = "";
-  try { await unlock(document.getElementById("pw").value); }
+  try { await unlock(document.getElementById("pw").value, document.getElementById("remember").checked); }
   catch(x){
     err.textContent = TXT.bad;
     btn.disabled = false; btn.textContent = TXT.open;
