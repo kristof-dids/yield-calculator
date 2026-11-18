@@ -8,6 +8,8 @@ GitHub Pages is static hosting, so the login cannot run on a server. The app its
 `index.html` only contains the login page and the encrypted app; without the password nothing
 readable is published. The readable source is **not** in this repository.
 
+Language: English or Dutch. Switch with EN / NL in the app, or open the link with `?lang=nl`.
+
 Data entered in the app is stored in the visitor's own browser (localStorage); use Backup (JSON) in the app to move or keep it.
 
 ## Update or change the password
